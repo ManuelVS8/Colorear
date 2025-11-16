@@ -284,7 +284,7 @@
             </div>
             <div class="control-group">
                 <label>&nbsp;</label>
-                <button id="downloadBtn" disabled>💾 Descargar Plantilla</button>
+                <button id="downloadBtn" disabled>💾 Descargar Plantilla (HQ)</button>
             </div>
         </section>
 
@@ -312,14 +312,14 @@ document.addEventListener('DOMContentLoaded', () => {
     tapSound.preload = 'auto';
 
     function playTapSound() {
-        tapSound.currentTime = 0; // Reinicia el sonido para poder reproducirlo de nuevo rápidamente
+        tapSound.currentTime = 0;
         tapSound.play().catch(error => console.error("Error al reproducir el sonido:", error));
     }
 
     const interactiveElements = document.querySelectorAll('button, .file-upload-label, input[type="range"]');
     interactiveElements.forEach(el => {
         el.addEventListener('click', playTapSound);
-        el.addEventListener('input', playTapSound); // Para los sliders
+        el.addEventListener('input', playTapSound);
     });
 
     // --- Elementos del DOM ---
@@ -383,13 +383,13 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         
-        showMessage('Generando plantilla... esto puede tardar unos segundos.', 'info');
+        showMessage('Generando plantilla de alta calidad... esto puede tardar unos segundos.', 'info');
 
         setTimeout(() => {
             const colorCount = parseInt(colorCountSlider.value);
             const gridSize = parseInt(gridSizeSlider.value);
 
-            const palette = kMeans(originalImageData.data, colorCount);
+            const palette = kMeansImproved(originalImageData.data, colorCount);
             drawTemplate(originalImageData, palette, gridSize);
             displayPalette(palette);
 
@@ -401,21 +401,20 @@ document.addEventListener('DOMContentLoaded', () => {
     function downloadResult() {
         const gridSize = parseInt(gridSizeSlider.value);
         const link = document.createElement('a');
-        link.download = `plantilla-ceip-siurot-${gridSize}x${gridSize}.png`;
+        link.download = `plantilla-ceip-siurot-${gridSize}x${gridSize}-HQ.png`;
         link.href = resultCanvas.toDataURL();
         link.click();
     }
 
     // --- Algoritmos de Procesamiento de Imagen ---
-    function kMeans(data, k) {
+    function kMeansImproved(data, k) {
         const points = [];
         for (let i = 0; i < data.length; i += 4) {
             points.push([data[i], data[i + 1], data[i + 2]]);
         }
-        let centroids = [];
-        for (let i = 0; i < k; i++) {
-            centroids.push(points[Math.floor(Math.random() * points.length)]);
-        }
+
+        let centroids = kMeansPlusPlus(points, k);
+
         for (let iter = 0; iter < 20; iter++) {
             const clusters = Array.from({ length: k }, () => []);
             for (const point of points) {
@@ -427,15 +426,51 @@ document.addEventListener('DOMContentLoaded', () => {
                 clusters[closestCentroidIndex].push(point);
             }
             let newCentroids = [];
-            for (const cluster of clusters) {
-                if (cluster.length === 0) continue;
-                const mean = [0, 0, 0];
-                for (const point of cluster) { mean[0] += point[0]; mean[1] += point[1]; mean[2] += point[2]; }
-                newCentroids.push([ Math.round(mean[0] / cluster.length), Math.round(mean[1] / cluster.length), Math.round(mean[2] / cluster.length) ]);
+            for (let i = 0; i < k; i++) {
+                const cluster = clusters[i];
+                if (cluster.length > 0) {
+                    const mean = [0, 0, 0];
+                    for (const point of cluster) { mean[0] += point[0]; mean[1] += point[1]; mean[2] += point[2]; }
+                    newCentroids.push([ Math.round(mean[0] / cluster.length), Math.round(mean[1] / cluster.length), Math.round(mean[2] / cluster.length) ]);
+                } else {
+                    newCentroids.push(points[Math.floor(Math.random() * points.length)]);
+                }
             }
             centroids = newCentroids;
         }
+        
         return centroids.map(c => ({ r: c[0], g: c[1], b: c[2] }));
+    }
+
+    function kMeansPlusPlus(points, k) {
+        if (k <= 0 || points.length === 0) return [];
+        if (k === 1) return [points[Math.floor(Math.random() * points.length)]];
+
+        const centroids = [];
+        centroids.push(points[Math.floor(Math.random() * points.length)]);
+
+        for (let i = 1; i < k; i++) {
+            const distances = [];
+            let sumOfDistances = 0;
+            for (const point of points) {
+                let minDist = Infinity;
+                for (const centroid of centroids) {
+                    const dist = euclideanDistance(point, centroid);
+                    if (dist < minDist) { minDist = dist; }
+                }
+                distances.push(minDist * minDist);
+                sumOfDistances += distances[distances.length - 1];
+            }
+            let random = Math.random() * sumOfDistances;
+            for (let j = 0; j < points.length; j++) {
+                random -= distances[j];
+                if (random <= 0) {
+                    centroids.push(points[j]);
+                    break;
+                }
+            }
+        }
+        return centroids;
     }
 
     function euclideanDistance(p1, p2) {
@@ -444,18 +479,51 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function drawTemplate(imageData, palette, gridSize) {
         const { width, height, data } = imageData;
+        const scaleFactor = 2; // Factor de calidad: 2x el tamaño original
+
         const gridCols = gridSize; const gridRows = gridSize;
-        const cellWidth = width / gridCols; const cellHeight = height / gridRows;
-        resultCanvas.width = width; resultCanvas.height = height;
-        resultCtx.fillStyle = 'white'; resultCtx.strokeStyle = 'black';
-        resultCtx.fillRect(0, 0, width, height);
-        resultCtx.lineWidth = 1; resultCtx.textAlign = 'center'; resultCtx.textBaseline = 'middle';
+        const cellWidth = (width / gridCols) * scaleFactor; const cellHeight = (height / gridRows) * scaleFactor;
+
+        const palettePadding = 20 * scaleFactor;
+        const swatchSize = 30 * scaleFactor;
+        const swatchGap = 15 * scaleFactor;
+        const textSpace = 40 * scaleFactor;
+        const paletteTitleFontSize = 24 * scaleFactor;
+        const paletteTextFontSize = 16 * scaleFactor;
+        
+        const itemWidth = swatchSize + swatchGap + textSpace;
+        const maxColorsPerRow = Math.floor((width * scaleFactor - 2 * palettePadding) / itemWidth);
+        const paletteRows = Math.ceil(palette.length / maxColorsPerRow);
+        const paletteAreaHeight = (palettePadding * 2 + paletteTitleFontSize + 10 + paletteRows * (swatchSize + paletteTextFontSize + swatchGap));
+        
+        // --- Redimensionar el Canvas con el factor de calidad ---
+        resultCanvas.width = width * scaleFactor;
+        resultCanvas.height = (height + paletteAreaHeight / scaleFactor) * scaleFactor; // Corrección en el cálculo del alto
+
+        // --- Dibujar Fondo y Cuadrícula ---
+        resultCtx.fillStyle = 'white';
+        resultCtx.fillRect(0, 0, resultCanvas.width, resultCanvas.height);
+        
+        resultCtx.strokeStyle = 'black';
+        resultCtx.lineWidth = 1 * scaleFactor; // Las líneas también deben ser más gruesas
+        resultCtx.textAlign = 'center';
+        resultCtx.textBaseline = 'middle';
+
         for (let row = 0; row < gridRows; row++) {
             for (let col = 0; col < gridCols; col++) {
                 const x = col * cellWidth; const y = row * cellHeight;
-                const sampleX = Math.floor(x + cellWidth / 2); const sampleY = Math.floor(y + cellHeight / 2);
+                const sampleX = Math.floor(x / scaleFactor + (cellWidth / scaleFactor) / 2); 
+                const sampleY = Math.floor(y / scaleFactor + (cellHeight / scaleFactor) / 2);
                 const i = (sampleY * width + sampleX) * 4;
-                const pixelColor = { r: data[i], g: data[i + 1], b: data[i + 2] };
+                
+                const alpha = data[i + 3];
+                let pixelColor;
+                if (alpha < 128) {
+                    pixelColor = { r: 255, g: 255, b: 255 };
+                } else {
+                    pixelColor = { r: data[i], g: data[i + 1], b: data[i + 2] };
+                }
+
                 let closestColorIndex = 0; let minDist = Infinity;
                 palette.forEach((color, index) => {
                     const dist = euclideanDistance([pixelColor.r, pixelColor.g, pixelColor.b], [color.r, color.g, color.b]);
@@ -463,12 +531,40 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 resultCtx.strokeRect(x, y, cellWidth, cellHeight);
                 const number = closestColorIndex + 1;
-                const fontSize = Math.max(8, Math.min(cellWidth, cellHeight) / 2.5);
+                const fontSize = Math.max(8 * scaleFactor, Math.min(cellWidth, cellHeight) / 2.5);
                 resultCtx.font = `bold ${fontSize}px Arial`;
                 resultCtx.fillStyle = 'black';
                 resultCtx.fillText(number, x + cellWidth / 2, y + cellHeight / 2);
             }
         }
+
+        // --- Dibujar la Paleta de Colores en la Parte Inferior ---
+        let currentY = (height * scaleFactor) + palettePadding;
+        
+        resultCtx.font = `bold ${paletteTitleFontSize}px Arial`;
+        resultCtx.fillStyle = 'black';
+        resultCtx.textAlign = 'center';
+        resultCtx.fillText('Código de Colores:', resultCanvas.width / 2, currentY);
+        currentY += paletteTitleFontSize + (10 * scaleFactor);
+
+        palette.forEach((color, index) => {
+            const row = Math.floor(index / maxColorsPerRow);
+            const col = index % maxColorsPerRow;
+            
+            const swatchX = palettePadding + col * itemWidth;
+            const swatchY = currentY + row * (swatchSize + paletteTextFontSize + swatchGap);
+            
+            resultCtx.fillStyle = `rgb(${color.r}, ${color.g}, ${color.b})`;
+            resultCtx.fillRect(swatchX, swatchY, swatchSize, swatchSize);
+            resultCtx.strokeStyle = 'black';
+            resultCtx.strokeRect(swatchX, swatchY, swatchSize, swatchSize);
+
+            resultCtx.font = `bold ${paletteTextFontSize}px Arial`;
+            resultCtx.fillStyle = 'black';
+            resultCtx.textAlign = 'left';
+            resultCtx.textBaseline = 'middle';
+            resultCtx.fillText(`${index + 1}`, swatchX + swatchSize + (10 * scaleFactor), swatchY + swatchSize / 2);
+        });
     }
 
     function displayPalette(palette) {
