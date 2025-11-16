@@ -10,6 +10,7 @@
             --bg-end: #0d2340;
             --panel-bg: #FFFFFF;
             --primary-btn: #f59e42;
+            --interactive-blue: #4A90E2; /* Nuevo color para controles interactivos */
             --text-color: #333333;
             --accent-text: #FFFFFF;
             --border-radius: 12px;
@@ -84,7 +85,7 @@
 
         .controls {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
             gap: 20px;
             margin-bottom: 30px;
             padding: 20px;
@@ -96,10 +97,11 @@
         .control-group {
             display: flex;
             flex-direction: column;
+            gap: 10px; /* Espacio entre slider y botones */
         }
 
         label {
-            margin-bottom: 8px;
+            margin-bottom: 5px;
             font-weight: 600;
             color: var(--bg-start);
         }
@@ -125,16 +127,86 @@
             transform: translateY(-2px);
         }
 
+        /* --- Estilos para la Barra Deslizante --- */
         input[type="range"] {
             width: 100%;
+            height: 8px;
+            border-radius: 5px;
+            background: #ddd;
+            outline: none;
             cursor: pointer;
+            -webkit-appearance: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: var(--interactive-blue);
+            cursor: pointer;
+            transition: background-color 0.3s, transform 0.2s;
+        }
+
+        input[type="range"]::-webkit-slider-thumb:hover {
+            background: #357ABD;
+            transform: scale(1.2);
+        }
+        
+        input[type="range"]::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: var(--interactive-blue);
+            cursor: pointer;
+            border: none;
+            transition: background-color 0.3s, transform 0.2s;
+        }
+
+        input[type="range"]::-moz-range-thumb:hover {
+            background: #357ABD;
+            transform: scale(1.2);
         }
 
         .range-value {
             text-align: center;
             font-size: 1.2em;
-            color: var(--primary-btn);
             font-weight: bold;
+            color: var(--interactive-blue);
+        }
+
+        /* --- Estilos para los Botones Táctiles --- */
+        .stepper-control {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+        }
+
+        .stepper-button {
+            background-color: var(--interactive-blue);
+            color: var(--accent-text);
+            border: none;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            font-size: 1.2em;
+            font-weight: bold;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background-color 0.3s, transform 0.2s;
+        }
+
+        .stepper-button:hover {
+            background-color: #357ABD;
+            transform: scale(1.1);
+        }
+
+        .stepper-button:active {
+            transform: scale(0.95);
         }
 
         button {
@@ -257,7 +329,7 @@
 
     <main class="container">
         <h2 class="app-title">🖍️ Generador de Plantillas para Colorear</h2>
-        <p class="subtitle">Crea guías imprimibles ajustando el tamaño de la cuadrícula (de 10x10 a 20x20).</p>
+        <p class="subtitle">Crea guías imprimibles ajustando el tamaño de la cuadrícula (de 10x10 a 40x40).</p>
         
         <div id="message-area"></div>
 
@@ -272,11 +344,19 @@
                 <label for="colorCount">Número de Colores</label>
                 <input type="range" id="colorCount" min="2" max="20" value="8">
                 <div class="range-value" id="colorCountValue">8</div>
+                <div class="stepper-control" data-min="2" data-max="20">
+                    <button class="stepper-button decrement" data-target="colorCount">-</button>
+                    <button class="stepper-button increment" data-target="colorCount">+</button>
+                </div>
             </div>
             <div class="control-group">
                 <label for="gridSize">Tamaño de la Cuadrícula</label>
-                <input type="range" id="gridSize" min="10" max="20" value="20">
+                <input type="range" id="gridSize" min="10" max="40" value="20">
                 <div class="range-value" id="gridSizeValue">20 x 20</div>
+                <div class="stepper-control" data-min="10" data-max="40">
+                    <button class="stepper-button decrement" data-target="gridSize">-</button>
+                    <button class="stepper-button increment" data-target="gridSize">+</button>
+                </div>
             </div>
             <div class="control-group">
                 <label>&nbsp;</label>
@@ -401,8 +481,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const generateBtn = document.getElementById('generateBtn');
     const downloadBtn = document.getElementById('downloadBtn');
     const colorCountSlider = document.getElementById('colorCount');
-    const colorCountValue = document.getElementById('colorCountValue');
     const gridSizeSlider = document.getElementById('gridSize');
+    const colorCountValue = document.getElementById('colorCountValue');
     const gridSizeValue = document.getElementById('gridSizeValue');
     const paletteDiv = document.getElementById('palette');
     const messageArea = document.getElementById('message-area');
@@ -414,18 +494,49 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentPalette = [];
     let debounceTimer;
 
+    // --- Estado de los controles ---
+    let colorCount = 8;
+    let gridSize = 20;
+
     // --- Event Listeners ---
     imageUpload.addEventListener('change', handleImageUpload);
     generateBtn.addEventListener('click', generateColoringTemplate);
     downloadBtn.addEventListener('click', downloadResult);
-    colorCountSlider.addEventListener('input', (e) => {
-        colorCountValue.textContent = e.target.value;
-        if (originalImageData) {
-            clearTimeout(debounceTimer);
-            debounceTimer = setTimeout(() => requestPaletteUpdate(), 300); // Debounce de 300ms
+
+    // --- Lógica de los controles híbridos ---
+    function updateControl(controlName, value) {
+        if (controlName === 'colorCount') {
+            colorCount = value;
+            colorCountSlider.value = value;
+            colorCountValue.textContent = value;
+        } else if (controlName === 'gridSize') {
+            gridSize = value;
+            gridSizeSlider.value = value;
+            gridSizeValue.textContent = `${value} x ${value}`;
         }
+        playTapSound();
+    }
+
+    colorCountSlider.addEventListener('input', (e) => updateControl('colorCount', parseInt(e.target.value)));
+    gridSizeSlider.addEventListener('input', (e) => updateControl('gridSize', parseInt(e.target.value)));
+
+    document.querySelectorAll('.stepper-button').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const targetControl = e.target.dataset.target;
+            const delta = e.target.classList.contains('increment') ? 1 : -1;
+            let currentValue = (targetControl === 'colorCount') ? colorCount : gridSize;
+            const min = parseInt(e.target.closest('.stepper-control').dataset.min);
+            const max = parseInt(e.target.closest('.stepper-control').dataset.max);
+            const newValue = Math.max(min, Math.min(max, currentValue + delta));
+            updateControl(targetControl, newValue);
+
+            if (originalImageData && targetControl === 'colorCount') {
+                clearTimeout(debounceTimer);
+                debounceTimer = setTimeout(() => requestPaletteUpdate(), 300);
+            }
+        });
     });
-    gridSizeSlider.addEventListener('input', (e) => gridSizeValue.textContent = `${e.target.value} x ${e.target.value}`);
+
 
     // --- Comunicación con el Web Worker ---
     worker.onmessage = function(e) {
@@ -472,7 +583,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function requestPaletteUpdate() {
         if (!originalImageData) return;
-        const colorCount = parseInt(colorCountSlider.value);
         worker.postMessage({ imageData: originalImageData.data, k: colorCount });
     }
 
@@ -483,8 +593,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         showMessage('Generando previsualización...', 'info');
-        const gridSize = parseInt(gridSizeSlider.value);
-        drawTemplate(originalImageData, currentPalette, gridSize, true); // true para previsualización
+        drawTemplate(originalImageData, currentPalette, gridSize, true);
         showMessage(`¡Previsualización ${gridSize}x${gridSize} generada!`, 'success');
     }
 
@@ -493,22 +602,16 @@ document.addEventListener('DOMContentLoaded', () => {
             showMessage('Por favor, genera una plantilla primero.', 'error');
             return;
         }
-        const gridSize = parseInt(gridSizeSlider.value);
         
         showMessage('Preparando plantilla para imprimir...', 'info');
-        
-        // 1. Dibujar la versión limpia (sin relleno) en el canvas
-        drawTemplate(originalImageData, currentPalette, gridSize, false); // false para descarga
+        drawTemplate(originalImageData, currentPalette, gridSize, false);
 
-        // 2. Obtener la imagen y descargarla
         const link = document.createElement('a');
         link.download = `plantilla-ceip-siurot-${gridSize}x${gridSize}-HQ.png`;
         link.href = resultCanvas.toDataURL();
         link.click();
 
-        // 3. Restaurar la previsualización en color en la pantalla
         drawTemplate(originalImageData, currentPalette, gridSize, true);
-        
         showMessage('¡Plantilla descargada con éxito!', 'success');
     }
 
@@ -534,10 +637,8 @@ document.addEventListener('DOMContentLoaded', () => {
         resultCanvas.width = width * scaleFactor;
         resultCanvas.height = (height + paletteAreaHeight / scaleFactor) * scaleFactor;
 
-        // --- Dibujar Fondo y Cuadrícula ---
         resultCtx.fillStyle = 'white';
         resultCtx.fillRect(0, 0, resultCanvas.width, resultCanvas.height);
-        
         resultCtx.strokeStyle = 'black';
         resultCtx.lineWidth = 1 * scaleFactor;
         resultCtx.textAlign = 'center';
@@ -561,30 +662,27 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (dist < minDist) { minDist = dist; closestColorIndex = index; }
                 });
                 
-                // --- MODO PREVIEW O MODO DESCARGA ---
                 if (isPreview) {
                     resultCtx.fillStyle = `rgb(${palette[closestColorIndex].r}, ${palette[closestColorIndex].g}, ${palette[closestColorIndex].b})`;
                     resultCtx.fillRect(x, y, cellWidth, cellHeight);
                 }
-                
                 resultCtx.strokeRect(x, y, cellWidth, cellHeight);
+                
                 const number = closestColorIndex + 1;
                 const fontSize = Math.max(8 * scaleFactor, Math.min(cellWidth, cellHeight) / 2.5);
                 resultCtx.font = `bold ${fontSize}px Arial`;
                 
-                // --- Contraste de Números (solo útil en modo preview) ---
                 if (isPreview) {
                     const luma = 0.299 * palette[closestColorIndex].r + 0.587 * palette[closestColorIndex].g + 0.114 * palette[closestColorIndex].b;
                     resultCtx.fillStyle = luma > 128 ? 'black' : 'white';
                 } else {
-                    resultCtx.fillStyle = 'black'; // Siempre negro en la plantilla limpia
+                    resultCtx.fillStyle = 'black';
                 }
                 
                 resultCtx.fillText(number, x + cellWidth / 2, y + cellHeight / 2);
             }
         }
 
-        // --- Dibujar la Paleta de Colores ---
         let currentY = (height * scaleFactor) + palettePadding;
         resultCtx.font = `bold ${paletteTitleFontSize}px Arial`;
         resultCtx.fillStyle = 'black';
