@@ -306,6 +306,78 @@
     </main>
 
 <script>
+// --- Web Worker como un Blob para mantener todo en un solo archivo ---
+const workerCode = `
+    self.onmessage = function(e) {
+        const { imageData, k } = e.data;
+        const palette = kMeansImproved(imageData, k);
+        self.postMessage({ type: 'palette', palette });
+    };
+
+    function kMeansImproved(data, k) {
+        const points = [];
+        for (let i = 0; i < data.length; i += 4) {
+            points.push([data[i], data[i + 1], data[i + 2]]);
+        }
+        let centroids = kMeansPlusPlus(points, k);
+        for (let iter = 0; iter < 20; iter++) {
+            const clusters = Array.from({ length: k }, () => []);
+            for (const point of points) {
+                let minDist = Infinity; let closestCentroidIndex = 0;
+                centroids.forEach((centroid, index) => {
+                    const dist = euclideanDistance(point, centroid);
+                    if (dist < minDist) { minDist = dist; closestCentroidIndex = index; }
+                });
+                clusters[closestCentroidIndex].push(point);
+            }
+            let newCentroids = [];
+            for (let i = 0; i < k; i++) {
+                const cluster = clusters[i];
+                if (cluster.length > 0) {
+                    const mean = [0, 0, 0];
+                    for (const point of cluster) { mean[0] += point[0]; mean[1] += point[1]; mean[2] += point[2]; }
+                    newCentroids.push([ Math.round(mean[0] / cluster.length), Math.round(mean[1] / cluster.length), Math.round(mean[2] / cluster.length) ]);
+                } else {
+                    newCentroids.push(points[Math.floor(Math.random() * points.length)]);
+                }
+            }
+            centroids = newCentroids;
+        }
+        return centroids.map(c => ({ r: c[0], g: c[1], b: c[2] }));
+    }
+
+    function kMeansPlusPlus(points, k) {
+        if (k <= 0 || points.length === 0) return [];
+        if (k === 1) return [points[Math.floor(Math.random() * points.length)]];
+        const centroids = [];
+        centroids.push(points[Math.floor(Math.random() * points.length)]);
+        for (let i = 1; i < k; i++) {
+            const distances = []; let sumOfDistances = 0;
+            for (const point of points) {
+                let minDist = Infinity;
+                for (const centroid of centroids) {
+                    const dist = euclideanDistance(point, centroid);
+                    if (dist < minDist) { minDist = dist; }
+                }
+                distances.push(minDist * minDist);
+                sumOfDistances += distances[distances.length - 1];
+            }
+            let random = Math.random() * sumOfDistances;
+            for (let j = 0; j < points.length; j++) {
+                random -= distances[j];
+                if (random <= 0) { centroids.push(points[j]); break; }
+            }
+        }
+        return centroids;
+    }
+
+    function euclideanDistance(p1, p2) {
+        return Math.sqrt(Math.pow(p1[0] - p2[0], 2) + Math.pow(p1[1] - p2[1], 2) + Math.pow(p1[2] - p2[2], 2));
+    }
+`;
+const blob = new Blob([workerCode], { type: 'application/javascript' });
+const worker = new Worker(URL.createObjectURL(blob));
+
 document.addEventListener('DOMContentLoaded', () => {
     // --- Sonido Interactivo ---
     const tapSound = new Audio('https://raw.githubusercontent.com/ManuelVS8/Efectos_audio/37b3eb2da9c15c04dfb71dfe1be60f088ea3cdfc/Tap.mp3');
@@ -339,13 +411,35 @@ document.addEventListener('DOMContentLoaded', () => {
     const resultCtx = resultCanvas.getContext('2d');
     
     let originalImageData = null;
+    let currentPalette = [];
+    let debounceTimer;
 
     // --- Event Listeners ---
     imageUpload.addEventListener('change', handleImageUpload);
     generateBtn.addEventListener('click', generateColoringTemplate);
     downloadBtn.addEventListener('click', downloadResult);
-    colorCountSlider.addEventListener('input', (e) => colorCountValue.textContent = e.target.value);
+    colorCountSlider.addEventListener('input', (e) => {
+        colorCountValue.textContent = e.target.value;
+        if (originalImageData) {
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => requestPaletteUpdate(), 300); // Debounce de 300ms
+        }
+    });
     gridSizeSlider.addEventListener('input', (e) => gridSizeValue.textContent = `${e.target.value} x ${e.target.value}`);
+
+    // --- Comunicación con el Web Worker ---
+    worker.onmessage = function(e) {
+        const { type, palette } = e.data;
+        if (type === 'palette') {
+            currentPalette = palette;
+            displayPalette(palette);
+            if (generateBtn.disabled) {
+                generateBtn.disabled = false;
+                downloadBtn.disabled = false;
+                showMessage('Paleta actualizada. ¡Ya puedes generar o descargar la plantilla!', 'success');
+            }
+        }
+    };
 
     // --- Funciones de UI ---
     function showMessage(text, type = 'info') {
@@ -367,120 +461,61 @@ document.addEventListener('DOMContentLoaded', () => {
                 originalCtx.drawImage(img, 0, 0);
                 originalImageData = originalCtx.getImageData(0, 0, img.width, img.height);
                 
-                generateBtn.disabled = false;
-                downloadBtn.disabled = true;
                 paletteDiv.innerHTML = '';
-                showMessage('Imagen cargada. ¡Ahora ajusta los controles y haz clic en Generar!', 'success');
+                requestPaletteUpdate();
+                showMessage('Imagen cargada. Generando paleta de colores...', 'info');
             };
             img.src = event.target.result;
         };
         reader.readAsDataURL(file);
     }
 
+    function requestPaletteUpdate() {
+        if (!originalImageData) return;
+        const colorCount = parseInt(colorCountSlider.value);
+        worker.postMessage({ imageData: originalImageData.data, k: colorCount });
+    }
+
     function generateColoringTemplate() {
-        if (!originalImageData) {
-            showMessage('Por favor, sube una imagen primero.', 'error');
+        if (!originalImageData || currentPalette.length === 0) {
+            showMessage('Por favor, sube una imagen y espera a que se genere la paleta.', 'error');
             return;
         }
         
-        showMessage('Generando plantilla de alta calidad... esto puede tardar unos segundos.', 'info');
-
-        setTimeout(() => {
-            const colorCount = parseInt(colorCountSlider.value);
-            const gridSize = parseInt(gridSizeSlider.value);
-
-            const palette = kMeansImproved(originalImageData.data, colorCount);
-            drawTemplate(originalImageData, palette, gridSize);
-            displayPalette(palette);
-
-            downloadBtn.disabled = false;
-            showMessage(`¡Plantilla ${gridSize}x${gridSize} generada con éxito!`, 'success');
-        }, 100);
+        showMessage('Generando previsualización...', 'info');
+        const gridSize = parseInt(gridSizeSlider.value);
+        drawTemplate(originalImageData, currentPalette, gridSize, true); // true para previsualización
+        showMessage(`¡Previsualización ${gridSize}x${gridSize} generada!`, 'success');
     }
 
     function downloadResult() {
+        if (!originalImageData || currentPalette.length === 0) {
+            showMessage('Por favor, genera una plantilla primero.', 'error');
+            return;
+        }
         const gridSize = parseInt(gridSizeSlider.value);
+        
+        showMessage('Preparando plantilla para imprimir...', 'info');
+        
+        // 1. Dibujar la versión limpia (sin relleno) en el canvas
+        drawTemplate(originalImageData, currentPalette, gridSize, false); // false para descarga
+
+        // 2. Obtener la imagen y descargarla
         const link = document.createElement('a');
         link.download = `plantilla-ceip-siurot-${gridSize}x${gridSize}-HQ.png`;
         link.href = resultCanvas.toDataURL();
         link.click();
+
+        // 3. Restaurar la previsualización en color en la pantalla
+        drawTemplate(originalImageData, currentPalette, gridSize, true);
+        
+        showMessage('¡Plantilla descargada con éxito!', 'success');
     }
 
     // --- Algoritmos de Procesamiento de Imagen ---
-    function kMeansImproved(data, k) {
-        const points = [];
-        for (let i = 0; i < data.length; i += 4) {
-            points.push([data[i], data[i + 1], data[i + 2]]);
-        }
-
-        let centroids = kMeansPlusPlus(points, k);
-
-        for (let iter = 0; iter < 20; iter++) {
-            const clusters = Array.from({ length: k }, () => []);
-            for (const point of points) {
-                let minDist = Infinity; let closestCentroidIndex = 0;
-                centroids.forEach((centroid, index) => {
-                    const dist = euclideanDistance(point, centroid);
-                    if (dist < minDist) { minDist = dist; closestCentroidIndex = index; }
-                });
-                clusters[closestCentroidIndex].push(point);
-            }
-            let newCentroids = [];
-            for (let i = 0; i < k; i++) {
-                const cluster = clusters[i];
-                if (cluster.length > 0) {
-                    const mean = [0, 0, 0];
-                    for (const point of cluster) { mean[0] += point[0]; mean[1] += point[1]; mean[2] += point[2]; }
-                    newCentroids.push([ Math.round(mean[0] / cluster.length), Math.round(mean[1] / cluster.length), Math.round(mean[2] / cluster.length) ]);
-                } else {
-                    newCentroids.push(points[Math.floor(Math.random() * points.length)]);
-                }
-            }
-            centroids = newCentroids;
-        }
-        
-        return centroids.map(c => ({ r: c[0], g: c[1], b: c[2] }));
-    }
-
-    function kMeansPlusPlus(points, k) {
-        if (k <= 0 || points.length === 0) return [];
-        if (k === 1) return [points[Math.floor(Math.random() * points.length)]];
-
-        const centroids = [];
-        centroids.push(points[Math.floor(Math.random() * points.length)]);
-
-        for (let i = 1; i < k; i++) {
-            const distances = [];
-            let sumOfDistances = 0;
-            for (const point of points) {
-                let minDist = Infinity;
-                for (const centroid of centroids) {
-                    const dist = euclideanDistance(point, centroid);
-                    if (dist < minDist) { minDist = dist; }
-                }
-                distances.push(minDist * minDist);
-                sumOfDistances += distances[distances.length - 1];
-            }
-            let random = Math.random() * sumOfDistances;
-            for (let j = 0; j < points.length; j++) {
-                random -= distances[j];
-                if (random <= 0) {
-                    centroids.push(points[j]);
-                    break;
-                }
-            }
-        }
-        return centroids;
-    }
-
-    function euclideanDistance(p1, p2) {
-        return Math.sqrt(Math.pow(p1[0] - p2[0], 2) + Math.pow(p1[1] - p2[1], 2) + Math.pow(p1[2] - p2[2], 2));
-    }
-
-    function drawTemplate(imageData, palette, gridSize) {
+    function drawTemplate(imageData, palette, gridSize, isPreview = true) {
         const { width, height, data } = imageData;
-        const scaleFactor = 2; // Factor de calidad: 2x el tamaño original
-
+        const scaleFactor = 2;
         const gridCols = gridSize; const gridRows = gridSize;
         const cellWidth = (width / gridCols) * scaleFactor; const cellHeight = (height / gridRows) * scaleFactor;
 
@@ -496,16 +531,15 @@ document.addEventListener('DOMContentLoaded', () => {
         const paletteRows = Math.ceil(palette.length / maxColorsPerRow);
         const paletteAreaHeight = (palettePadding * 2 + paletteTitleFontSize + 10 + paletteRows * (swatchSize + paletteTextFontSize + swatchGap));
         
-        // --- Redimensionar el Canvas con el factor de calidad ---
         resultCanvas.width = width * scaleFactor;
-        resultCanvas.height = (height + paletteAreaHeight / scaleFactor) * scaleFactor; // Corrección en el cálculo del alto
+        resultCanvas.height = (height + paletteAreaHeight / scaleFactor) * scaleFactor;
 
         // --- Dibujar Fondo y Cuadrícula ---
         resultCtx.fillStyle = 'white';
         resultCtx.fillRect(0, 0, resultCanvas.width, resultCanvas.height);
         
         resultCtx.strokeStyle = 'black';
-        resultCtx.lineWidth = 1 * scaleFactor; // Las líneas también deben ser más gruesas
+        resultCtx.lineWidth = 1 * scaleFactor;
         resultCtx.textAlign = 'center';
         resultCtx.textBaseline = 'middle';
 
@@ -518,29 +552,40 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 const alpha = data[i + 3];
                 let pixelColor;
-                if (alpha < 128) {
-                    pixelColor = { r: 255, g: 255, b: 255 };
-                } else {
-                    pixelColor = { r: data[i], g: data[i + 1], b: data[i + 2] };
-                }
+                if (alpha < 128) { pixelColor = { r: 255, g: 255, b: 255 }; }
+                else { pixelColor = { r: data[i], g: data[i + 1], b: data[i + 2] }; }
 
                 let closestColorIndex = 0; let minDist = Infinity;
                 palette.forEach((color, index) => {
                     const dist = euclideanDistance([pixelColor.r, pixelColor.g, pixelColor.b], [color.r, color.g, color.b]);
                     if (dist < minDist) { minDist = dist; closestColorIndex = index; }
                 });
+                
+                // --- MODO PREVIEW O MODO DESCARGA ---
+                if (isPreview) {
+                    resultCtx.fillStyle = `rgb(${palette[closestColorIndex].r}, ${palette[closestColorIndex].g}, ${palette[closestColorIndex].b})`;
+                    resultCtx.fillRect(x, y, cellWidth, cellHeight);
+                }
+                
                 resultCtx.strokeRect(x, y, cellWidth, cellHeight);
                 const number = closestColorIndex + 1;
                 const fontSize = Math.max(8 * scaleFactor, Math.min(cellWidth, cellHeight) / 2.5);
                 resultCtx.font = `bold ${fontSize}px Arial`;
-                resultCtx.fillStyle = 'black';
+                
+                // --- Contraste de Números (solo útil en modo preview) ---
+                if (isPreview) {
+                    const luma = 0.299 * palette[closestColorIndex].r + 0.587 * palette[closestColorIndex].g + 0.114 * palette[closestColorIndex].b;
+                    resultCtx.fillStyle = luma > 128 ? 'black' : 'white';
+                } else {
+                    resultCtx.fillStyle = 'black'; // Siempre negro en la plantilla limpia
+                }
+                
                 resultCtx.fillText(number, x + cellWidth / 2, y + cellHeight / 2);
             }
         }
 
-        // --- Dibujar la Paleta de Colores en la Parte Inferior ---
+        // --- Dibujar la Paleta de Colores ---
         let currentY = (height * scaleFactor) + palettePadding;
-        
         resultCtx.font = `bold ${paletteTitleFontSize}px Arial`;
         resultCtx.fillStyle = 'black';
         resultCtx.textAlign = 'center';
@@ -550,7 +595,6 @@ document.addEventListener('DOMContentLoaded', () => {
         palette.forEach((color, index) => {
             const row = Math.floor(index / maxColorsPerRow);
             const col = index % maxColorsPerRow;
-            
             const swatchX = palettePadding + col * itemWidth;
             const swatchY = currentY + row * (swatchSize + paletteTextFontSize + swatchGap);
             
@@ -577,6 +621,10 @@ document.addEventListener('DOMContentLoaded', () => {
             colorNumber.textContent = `${index + 1}`;
             swatch.appendChild(colorBox); swatch.appendChild(colorNumber); paletteDiv.appendChild(swatch);
         });
+    }
+
+    function euclideanDistance(p1, p2) {
+        return Math.sqrt(Math.pow(p1[0] - p2[0], 2) + Math.pow(p1[1] - p2[1], 2) + Math.pow(p1[2] - p2[2], 2));
     }
 });
 </script>
